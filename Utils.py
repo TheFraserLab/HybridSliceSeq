@@ -98,9 +98,11 @@ for dir_name in sys.path:
                               keep_default_na=False, na_values=['---'],
                               skipfooter=2, engine='python',
                               index_col=1,skiprows=5).ix[:, 0]
+        gn_to_fbgn = {val: key for key, val in fbgns.items()}
         break
 else:
-    raise ImportError('Could not find Gene mapping table')
+    pass
+    #raise ImportError('Could not find Gene mapping table')
 
 def get_synonyms():
     gn_to_fbgn = defaultdict(lambda : 'NOTPRESENT')
@@ -112,6 +114,7 @@ def get_synonyms():
     secondaries = {}
     for line in open(file):
         line = line.strip().split('\t')
+        if len(line) < 2: continue
         fbgn = line[0]
         gn_to_fbgn[line[1]] = fbgn
         if len(line) == 3 or len(line) == 4:

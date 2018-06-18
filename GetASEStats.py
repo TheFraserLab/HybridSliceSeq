@@ -3,13 +3,14 @@ import numpy as np
 import pandas as pd
 from collections import Counter
 from numpy import isfinite, int64, int32, int16, int8, sign, abs, nan
-from scipy.stats import ttest_1samp
 import Utils as ut
 import PlotUtils as pu
 from Utils import startswith, fbgns, pd_kwargs
-import HybridUtils as hu
-from matplotlib import cm
-from progressbar import ProgressBar
+from matplotlib import cm, pyplot
+from warnings import filterwarnings
+
+filterwarnings('ignore', category=FutureWarning)
+filterwarnings('ignore', category=DeprecationWarning)
 
 def slices_per_embryo(ase):
     return Counter(i.split('_sl')[0] for i in ase.columns)
@@ -63,14 +64,14 @@ plot_kwargs = {'box_height': 25,
                'draw_name': True,
                'draw_row_labels': True,
                'make_hyperlinks': True,
-               'progress_bar': False,
+               'progress_bar': True,
                'split_columns': True,
                'total_width': 200}
 
 if __name__ == "__main__":
     if 'ase' not in locals() or ('reload_ase' in locals() and locals()['reload_ase']):
         print("Reloading data")
-        ase = (pd.read_table('analysis_godot/ase_summary_by_read.tsv', **pd_kwargs)
+        ase = (pd.read_table('analysis_godot/wasp_summary_by_read.tsv', **pd_kwargs)
                .dropna(how='all', axis=1)
                .select(**ut.sel_startswith(('melXsim', 'simXmel')))
               )
@@ -88,20 +89,6 @@ if __name__ == "__main__":
         to_gn = pd.read_table('prereqs/gene_map_table_fb_2016_01.tsv', index_col=1, skiprows=4).ix[:,0]
         to_fbgn = ut.get_synonyms()
 
-        classes = pd.DataFrame(index=ase.index, columns=['melXsim', 'simXmel'], data=pd.np.nan)
-        for ix in ProgressBar()(classes.index):
-            for col in classes.columns:
-                classes.ix[ix, col] = get_class(ix, ase, subset=col, expr=expr)
-
-    #lott['fbgn'] = to_fbgn[lott.index]
-    #lott.drop_duplicates(subset='fbgn', keep=False, inplace=True)
-    #lott.index = lott.fbgn
-
-    paris = pd.read_table('prereqs/GSE68062_Gene_CLASS_after_FPKM_normalization.txt', index_col=1,
-            header=0,
-            names=['gn', 'FBgn', 'yak', 'pse', 'vir']+[s+'_'+n for s in 'mel yak pse vir'.split() for n in 'class prob'.split()],
-            )
-
 
     in_both = ase.index.intersection(expr.index)
     ase = ase.ix[in_both]
@@ -113,8 +100,10 @@ if __name__ == "__main__":
                                                                            axis="columns")
 
 
-    syns = ut.get_synonyms()
-    chrom_of = ut.get_chroms(syns)
+    if 'syns' not in locals() or (locals().get('reload_syns', False)):
+        syns = ut.get_synonyms()
+        chrom_of = ut.get_chroms(syns)
+        reload_syns = False
 
     males = ('melXsim_cyc14C_rep3', 'simXmel_cyc14C_rep2')
     on_x = [chrom_of[gene] == 'X' for gene in ase.index]
@@ -131,6 +120,7 @@ if __name__ == "__main__":
             index=ase.columns,
             data=[-1 if c.startswith('m') else 1 for c in ase.columns]
             )
+    ase_rectified = ase.multiply(parent_of_origin)
 
 
     data = {}
@@ -148,115 +138,186 @@ if __name__ == "__main__":
     #slices_with_aseval = slices_with_aseval.where(slices_with_aseval>slices_with_expr, slices_with_expr)
     #slices_with_aseval = slices_with_aseval.where(slices_with_aseval>5, 5)
 
-    bias_dirs = pd.DataFrame(data=pd.np.nan, index=ase.index,
-                             columns=['melXsim', 'simXmel'])
-    biases = Counter()
+    print("Species dominance data...")
 
-    for gene in ase.index:
-        gene_biases = hu.is_directionally_biased(ase, gene, two_tailed=True,
-                                                 style='cutoff',
-                                                 frac_for_biased=FRAC_FOR_MATERNAL,
-                                                 ase_level=ASE_MIN,
-                                                )
-        biases[(gene_biases['melXsim'], gene_biases['simXmel'])] += 1
-        bias_dirs.ix[gene] = gene_biases
+    deseq_mel = pd.read_table('analysis/mel_deseq.tsv', index_col=0,
+                              keep_default_na=False, na_values=['NA', '---'])
+    deseq_sim = pd.read_table('analysis/sim_deseq.tsv', index_col=0,
+                              keep_default_na=False, na_values=['NA', '---'])
 
-    maternal = pd.Series(index=ase.index,
-                         data=[all(bias_dirs.ix[gene] == (-1, 1)) for gene in
-                               ase.index]
-                       )
-    zygotic = pd.Series(index=ase.index,
-                         data=[all(bias_dirs.ix[gene] == (0, 0)) for gene in
-                               ase.index]
-                       )
+    deseq_mat_pvals = pd.DataFrame(index=deseq_mel.index.union(deseq_sim.index),
+                                   columns=['mel', 'sim'],
+                                   data=np.nan)
+
+    deseq_mat_pvals.ix[deseq_mel.index, 'mel'] = (
+        deseq_mel.padj * (deseq_mel.log2FoldChange > 0) +
+        (1-deseq_mel.padj) * (deseq_mel.log2FoldChange < 0)
+    )
+    deseq_mat_pvals.ix[deseq_sim.index, 'sim'] = (
+        deseq_sim.padj * (deseq_sim.log2FoldChange > 0) +
+        (1-deseq_sim.padj) * (deseq_sim.log2FoldChange < 0)
+    )
+
+    deseq_mat_lfcs = pd.DataFrame(index=deseq_mel.index.union(deseq_sim.index),
+                                   columns=['mel', 'sim'],
+                                   data=np.nan)
+
+    deseq_mat_lfcs.ix[deseq_mel.index, 'mel'] = deseq_mel.log2FoldChange
+    deseq_mat_lfcs.ix[deseq_sim.index, 'sim'] = -deseq_sim.log2FoldChange
+    min_lfc = deseq_mat_lfcs.T.mean()
+
+    has_ase = ut.true_index(ase.T.count() > ase.shape[1]/2)
+    lott_mat = ut.true_index(lott.CLASS == 'mat')
+    lott_matzyg = ut.true_index(lott.CLASS == 'matzyg')
+    lott_zyg = ut.true_index(lott.CLASS == 'zyg')
+    pyplot.violinplot([min_lfc[lott_mat.intersection(has_ase)].dropna(),
+                       min_lfc[lott_matzyg.intersection(has_ase)].dropna(),
+                       min_lfc[lott_zyg.intersection(has_ase)].dropna()],
+                      showmedians=True,showextrema=False,
+                      bw_method='silverman',
+                     )
+    for i, genes in enumerate([lott_mat, lott_matzyg, lott_zyg]):
+        genes = genes.intersection(has_ase)
+        pyplot.hlines(min_lfc[genes].dropna(), i+0.98, i+1.02, 'k', alpha=0.1)
+    pyplot.xticks([1,2,3],
+                  [
+                      '{}\n{}'.format(c, len(ut.true_index(lott.CLASS==c).intersection(has_ase)))
+                      for c in ['mat', 'matzyg', 'zyg']
+                  ]
+                 )
+    pyplot.hlines(0, 0.5, 3.5)
+    pyplot.xlim(0.5, 3.5)
+    ax=pyplot.gca()
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    ax.spines['left'].set_bounds(min_lfc[has_ase].min(), min_lfc[has_ase].max())
+    pyplot.ylabel('Maternal Log 2 Fold Change')
+    pyplot.savefig('analysis/results/lott_lfcs.png', dpi=300)
 
 
-    maternal_ttest = pd.Series(index=all_ase.index,
-                               data=1.0)
-    for gene in maternal_ttest.index:
-        if all_ase.ix[gene].count() > 10:
-            tstat, pval = ttest_1samp(all_ase.ix[gene] * parent_of_origin, 0,
-                                      nan_policy='omit')
-            maternal_ttest[gene] = pval# < 1e-1 / len(maternal_ttest)
-
-    print(*ut.true_index(maternal_ttest < (1e-2)), sep='\n',
-          file=open('analysis/results/strict_maternal_gene_names.txt', 'w'))
-    paternal_mxs = pd.Series(index=ase_nomaleX.index, data=pd.np.nan)
-    paternal_sxm = pd.Series(index=ase_nomaleX.index, data=pd.np.nan)
-    samedir = pd.Series(index=ase_nomaleX.index, data=pd.np.nan)
-    for gene in paternal_sxm.index:
-        if expr.ix[gene].max() < EXPR_MIN:
-            continue
-        gene_ase = ase_nomaleX.ix[gene].multiply(parent_of_origin).dropna()
-        per_sample = Counter(col.split('_')[0] for col in gene_ase.index)
-        if len(per_sample) < 2 or per_sample.most_common(2)[1][1] < 5:
-            continue
-
-        tstat, pval = ttest_1samp(gene_ase.select(startswith('melXsim')), 0)
-        paternal_mxs.ix[gene] = pval/2 if tstat < 0 else 1-pval/2
-        tstat, pval = ttest_1samp(gene_ase.select(startswith('simXmel')), 0)
-        paternal_sxm.ix[gene] = pval/2 if tstat < 0 else 1-pval/2
-        #tstat, pval = ttest_ind(gene_ase.select('melXsim'),
-                                #gene_ase.select('simXmel'))
-    paternal_ttest = paternal_mxs.where(paternal_mxs > paternal_sxm, paternal_sxm).dropna().sort_values(ascending=False)
 
 
-
-    data['num_maternal'] = biases[(-1, 1)]
-    data['num_paternal'] = biases[(1, -1)]
-    data['mel_dominant'] = biases[(-1, -1)]
-    data['sim_dominant'] = biases[(1, 1)]
 
     # Species dominance
-    mel_dom = ut.true_index((bias_dirs.T == [-1, -1]).sum() == 2)
-    sim_dom = ut.true_index((bias_dirs.T == [ 1,  1]).sum() == 2)
+    mel_mel_bias = ut.true_index((deseq_mel.padj < .05) & (deseq_mel.log2FoldChange > 0))
+    sim_mel_bias = ut.true_index((deseq_sim.padj < .05) & (deseq_sim.log2FoldChange > 0))
+    mel_sim_bias = ut.true_index((deseq_mel.padj < .05) & (deseq_mel.log2FoldChange < 0))
+    sim_sim_bias = ut.true_index((deseq_sim.padj < .05) & (deseq_sim.log2FoldChange < 0))
 
-    mel_dom = expr.select(**ut.sel_startswith('simXsim')).T.max()[mel_dom].sort_values().index
-    sim_dom = expr.select(**ut.sel_startswith('melXmel')).T.max()[sim_dom].sort_values().index
+    maternal = mel_mel_bias.intersection(sim_sim_bias)
+    paternal = mel_sim_bias.intersection(sim_mel_bias)
+    mel_dom = mel_mel_bias.intersection(sim_mel_bias)
+    sim_dom = mel_sim_bias.intersection(sim_sim_bias)
+    zygotic = ut.true_index((deseq_mel.padj > .05) & (deseq_sim.padj > .05))
+
+    semi_maternal_mel = ut.true_index((deseq_mel.padj < .05)
+                                      & (deseq_mel.log2FoldChange > 0)
+                                      & (deseq_sim.padj > .05))
+    semi_maternal_sim = ut.true_index((deseq_sim.padj < .05)
+                                     & (deseq_sim.log2FoldChange < 0)
+                                     & (deseq_mel.padj > .05))
+    semi_maternal = semi_maternal_mel.append(semi_maternal_sim)
+
+
+    print(*maternal, sep='\n', file=open('analysis/results/maternal.txt', 'w'))
+    print(*paternal, sep='\n', file=open('analysis/results/paternal.txt', 'w'))
+    print(*mel_dom, sep='\n', file=open('analysis/results/mel_dom.txt', 'w'))
+    print(*sim_dom, sep='\n', file=open('analysis/results/sim_dom.txt', 'w'))
+
+    data['num_maternal'] = len(maternal)
+    data['num_paternal'] = len(paternal)
+    data['mel_dominant'] = len(mel_dom)
+    data['sim_dominant'] = len(sim_dom)
+    data['num_semimat'] = len(semi_maternal)
+
+
+    expected = (sim_parental - mel_parental)/(sim_parental + mel_parental)
+    mel_dom = expected.ix[mel_dom].T.mean().sort_values().index
+    sim_dom = expected.ix[sim_dom].T.mean().sort_values().index
 
     print("Making species bias figs")
-    pu.svg_heatmap((expr, (sim_parental - mel_parental)/(sim_parental + mel_parental), ase), 'analysis/results/mel_dom.svg',
+    pu.svg_heatmap((expr, expected, ase), 'analysis/results/mel_dom.svg',
                    index=mel_dom,
                    norm_rows_by=('maxall', 'center0pre', 'center0pre'),
                    cmap=(pu.ISH, cm.RdBu, cm.RdBu),
                    progress_bar=True,
-                   row_labels=[('{:6.1f}'.format(expr.ix[i].max()),
-                                chrom_of[i], i)
-                               for i in mel_dom],
+                   row_labels=[(
+                       '{:6.1f}'.format(
+                           expr.ix[i].max() if i in expr.index else np.nan),
+                       chrom_of.get(i, '???'),
+                       i)
+                       for i in mel_dom],
                    nan_replace='no',
                    **pu.kwargs_heatmap)
 
-    pu.svg_heatmap((expr, (sim_parental - mel_parental)/(sim_parental + mel_parental), ase), 'analysis/results/sim_dom.svg',
+    pu.svg_heatmap((expr, expected, ase), 'analysis/results/sim_dom.svg',
                    index=sim_dom,
                    norm_rows_by=('maxall', 'center0pre', 'center0pre'),
                    cmap=(pu.ISH, cm.RdBu, cm.RdBu),
                    progress_bar=True,
-                   row_labels=[('{:6.1f}'.format(expr.ix[i].max()),
-                                chrom_of[i], i)
-                               for i in sim_dom],
+                   row_labels=[(
+                       '{:6.1f}'.format(
+                           expr.ix[i].max() if i in expr.index else np.nan),
+                       chrom_of.get(i, '???'), i)
+                       for i in sim_dom],
                    nan_replace='no',
                    **pu.kwargs_heatmap)
 
 
-    low_expr_lott = slices_with_expr[lott.index[lott.CLASS == 'mat']] < FRAC_FOR_MATERNAL * len(expr.columns)
-    data['lott_maternal_low'] = sum(low_expr_lott)
-    has_ase_lott = (slices_with_aseval > FRAC_FOR_MATERNAL * len(ase.columns)).ix[lott.index[lott.CLASS == 'mat']].dropna()
-    data['lott_maternal_measured'] = sum(has_ase_lott)
+    lott_mat = ut.true_index(lott.CLASS == 'mat')
+    data['lott_maternal'] = len(lott_mat)
+    low_expr_lott = ut.true_index(~(isfinite(deseq_mel.padj[lott_mat])
+                                    & isfinite(deseq_sim.padj[lott_mat])))
+    data['lott_maternal_low'] = len(low_expr_lott)
+    has_ase_lott = ut.true_index(
+        (isfinite(deseq_mel.padj[lott_mat])
+         & isfinite(deseq_sim.padj[lott_mat]))
+    )
+    data['lott_maternal_measured'] = len(has_ase_lott)
 
-    data['lott_maternal_agree'] = sum(has_ase_lott*maternal.ix[has_ase_lott.index])
+    data['lott_maternal_agree'] = len(maternal.intersection(lott_mat))
 
-    me_mat_lott_zyg = set(lott[lott.CLASS == 'zyg'].index).intersection(maternal[maternal].index)
-    me_zyg_lott_mat = set(lott[lott.CLASS == 'mat'].index).intersection(ut.true_index(zygotic))
+    me_mat_lott_zyg = ut.true_index(lott.CLASS == 'zyg').intersection(maternal)
+    me_zyg_lott_mat = lott_mat.intersection(zygotic)
+    me_zyg_lott_mat = ase_rectified.ix[me_zyg_lott_mat].T.mean().sort_values().index
     data['lott_disagree_t_one'] = len(me_mat_lott_zyg)
     data['lott_disagree_t_two'] = len(me_zyg_lott_mat)
-    pu.svg_heatmap((ase.ix[me_mat_lott_zyg], lott_expr.ix[me_mat_lott_zyg]), 'analysis/results/me_mat_lott_zyg.svg',
-                   norm_rows_by=('center0pre', 'max'), cmap=(cm.RdBu, cm.viridis),  **plot_kwargs)
+    #pu.svg_heatmap((ase.ix[me_mat_lott_zyg], lott_expr.ix[me_mat_lott_zyg]),
+    #               'analysis/results/me_mat_lott_zyg.svg',
+    #               norm_rows_by=('center0pre', 'max'),
+    #               cmap=(cm.RdBu, cm.viridis),
+    #               **plot_kwargs)
 
-    peak_genes = [line.strip() for line in open('analysis/results/peak_genes.txt')]
-    logist_genes = [line.strip() for line in open('analysis/results/logist_genes.txt')]
+    small_heatmap_kwargs = plot_kwargs.copy()
+    small_heatmap_kwargs['box_height'] = 3
+    small_heatmap_kwargs['draw_row_labels'] = False
+    small_heatmap_kwargs['nan_replace'] = 'no'
+    pu.svg_heatmap((ase.ix[me_mat_lott_zyg], lott_expr.ix[me_mat_lott_zyg]),
+                   'analysis/results/me_mat_lott_zyg.svg',
+                   norm_rows_by=('center0pre', 'max'),
+                   cmap=(cm.RdBu, cm.viridis),
+                   **plot_kwargs)
+    pu.svg_heatmap((ase.ix[me_zyg_lott_mat], lott_expr.ix[me_zyg_lott_mat]),
+                   'analysis/results/me_zyg_lott_mat.svg',
+                   norm_rows_by=('center0pre', 'max'),
+                   cmap=(cm.RdBu, cm.viridis),
+                   **small_heatmap_kwargs)
+
+    pu.svg_heatmap((ase, lott_expr),
+                   'analysis/results/semimaternal.svg',
+                   index=semi_maternal,
+                   norm_rows_by=('center0pre', 'max'),
+                   cmap=(cm.RdBu, cm.viridis),
+                   **small_heatmap_kwargs)
+
+
+    peak_genes = [line.strip() for line in open('analysis/results/asepeak_genes.txt')]
+    logist_genes = [line.strip() for line in open('analysis/results/aselogist_genes.txt')]
 
     data['num_peak'] = len(peak_genes)
     data['num_logist'] = len(logist_genes)
+    data['num_strong_svase'] = len(peak_genes) + len(logist_genes)
 
     peak_fd = np.fromfile('analysis/results/fd_peak.numpy')
     logist_fd = np.fromfile('analysis/results/fd_logist.numpy')
@@ -270,27 +331,20 @@ if __name__ == "__main__":
     data['frac_fdr_logist'] = sum(logist_fd > co) / len(logist_fd) / (sum(peak_r2s > co) / len(peak_r2s))
     data['frac_max_fdr_logist'] = 1 / len(logist_fd)/ (sum(peak_r2s > co) / len(peak_r2s))
 
-    hb_bind_data = {line.strip()
-                    for line in open('analysis/results/hb_wt_emd_0.1.txt')
-                    if line.strip() in expr.index}
-
-    #data['hb_diff'] = len(hb_bind_data)
-    #data['frac_higher_hb'] = 0
-
     print(data)
 
     with open('analysis/results/stats.tex', 'w') as outf:
         for var, val in data.items():
-            numeric =  isinstance(val, (float, int, int64, int32, int8))
+            numeric =  isinstance(val, (float, int, int64, int32, int16, int8))
             frac = var.lower().startswith('frac')
             outf.write(create_latex_command(var, val, numeric, frac))
 
 
     if data['num_paternal']:
-        pu.svg_heatmap(ase.ix[paternal_ttest.index[paternal_ttest < .05]],
+        pu.svg_heatmap(ase.ix[paternal],
                        'analysis/results/paternal.svg',
                        norm_rows_by='center0pre', cmap=cm.RdBu,
                        hatch_nan=True,hatch_size=1,
-                       row_labels=fbgns[paternal_ttest.index],
+                       row_labels=fbgns[paternal],
                        **plot_kwargs)
 

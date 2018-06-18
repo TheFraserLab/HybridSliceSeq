@@ -24,6 +24,11 @@ def parse_args():
     parser.add_argument('--confidence', '-c', default=False,
                         dest='conf', action='store_true',
                         help="Include confidence intervals")
+    parser.add_argument('--refalt', '-R', default=False,
+            action='store_true',
+            help=('Only output columns "ref_counts" and "alt_counts" for each'
+                +' sample')
+            )
     parser.add_argument('--params', '-p', default=False,
                         dest='has_params',
                         help="Parameters file including renaming conventions: "
@@ -54,6 +59,16 @@ def parse_args():
                               'expression table'))
     parser.add_argument('--column', '-C', default='FPKM',
                         help='Column to read out (either name or number)')
+    parser.add_argument('--exclude-column', '-X',
+                        default=False
+                       )
+    parser.add_argument('--exclude-column-value',
+                        nargs='+',
+                        default=[],
+                       )
+    parser.add_argument('--exclude-samples', '-x',
+                        nargs='+', default=[],
+                       )
     parser.add_argument('--no-header', dest='header', action='store_false',
                         default=True,
                         help='No header line in the file')
@@ -95,7 +110,11 @@ def parse_args():
     return args
 
 
-from GetMapStats import get_stagenum
+try:
+    from GetMapStats import get_stagenum
+except ImportError:
+    get_stagenum = lambda x, y, z: x
+
 
 def get_expr_values(fname):
     try:
@@ -217,6 +236,17 @@ def get_expr_values(fname):
             print(reads, total_reads, map_rate,
                   args.strip_low_map_rate / 100)
 
+    excluded = 0
+    for sample in args.exclude_samples:
+        if sample in dirname:
+            for val in args.exclude_column_value:
+                excluded += sum(table[args.exclude_column] == val)
+                table.ix[table[args.exclude_column] == val, :] = pandas.np.nan
+
+    if excluded:
+        print("Excluding {} entries from {}".format(excluded, dirname))
+        print(dirname, args.exclude_samples, args.exclude_column_value)
+
     if skip:
         if args.strip_as_nan:
             from numpy import nan
@@ -234,6 +264,13 @@ def get_expr_values(fname):
             dirname+"_"+args.column+"_conf_hi",
             table.ix[:, args.column+"_conf_hi"],
                )
+    elif args.refalt:
+        return (
+            dirname + "_ref",
+            table.ix[:, 'ref_counts'],
+            dirname + "_alt",
+            table.ix[:, 'alt_counts'],
+            )
     else:
         try:
             ret = table.ix[:, args.column]
@@ -263,7 +300,12 @@ if __name__ == "__main__":
     import multiprocessing as mp
     pool = mp.Pool(30)
     res = pool.map(get_expr_values, fnames)
-    if args.conf:
+    if args.refalt:
+        names_ref, cols_ref, names_alt, cols_alt = zip(*res)
+        d = dict(zip(names_ref, cols_ref))
+        d.update(dict(zip(names_alt, cols_alt)))
+        df = pandas.DataFrame(d)
+    elif args.conf:
         names, cols, names_lo, cols_lo, names_hi, cols_hi = zip(*res)
         df = pandas.DataFrame(dict(zip(names, cols))
                               +dict(zip(names_lo, cols_lo))
@@ -273,6 +315,9 @@ if __name__ == "__main__":
         df = pandas.DataFrame(dict(zip(names, cols)))
 
 
+    narep = '---'
+    if args.refalt:
+        narep='0'
     df.sort_index(axis=1).to_csv(path.join(args.basedir,
                                            args.basefile
                                            + ('_in_{}'.format(args.in_subdirectory)
@@ -280,7 +325,7 @@ if __name__ == "__main__":
                                            + ('_with_conf' * args.conf)
                                            + '.tsv'),
                                  float_format=args.float_format,
-                                 sep='\t', na_rep='---')
+                                 sep='\t', na_rep=narep)
 
     if args.make_geo:
         if not path.exists(path.join(args.basedir, 'geo')):

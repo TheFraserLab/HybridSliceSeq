@@ -4,7 +4,7 @@ from scipy.optimize import curve_fit
 from scipy.stats import linregress, ttest_1samp
 from multiprocessing import Pool
 from collections import Counter
-from Utils import (sel_startswith, get_xs, pd_kwargs, fbgns, get_synonyms,
+from Utils import (sel_startswith, get_xs, pd_kwargs, get_synonyms,
                    startswith, get_chroms)
 import pandas as pd
 import itertools as it
@@ -15,6 +15,10 @@ from progressbar import (ProgressBar, Percentage, Timer, Bar, FileTransferSpeed,
 import PlotUtils as pu
 import Utils as ut
 import warnings
+
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
+
 if __name__ == "__main__":
     from matplotlib import cm
     import matplotlib.pyplot as mpl
@@ -34,6 +38,8 @@ def fit_func(func, index, data, xs, p0=None, median_in=None, randomize=False,
              print_error=False):
     warnings.filterwarnings('ignore', '.*overflow encountered.*')
     warnings.filterwarnings('ignore', '.*Covariance of the parameters.*')
+    warnings.filterwarnings('ignore', category=DeprecationWarning)
+    warnings.filterwarnings('ignore', category=FutureWarning)
     ys = data.ix[index]
     if median_in and not median_in[0] < ys.median() < median_in[1]:
         print("Median {} outside of range [{}, {}]"
@@ -196,6 +202,8 @@ def parse_args():
 
 
 if __name__ == "__main__":
+    from Utils import fbgns
+
     args = parse_args()
     expr = pd.read_table(args.expression_file, **pd_kwargs).drop('---', axis=1, errors='ignore')
     ase = (pd
